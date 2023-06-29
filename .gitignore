@@ -1,0 +1,7 @@
+.vscode/
+log/
+log_old/
+.vim/
+.python-version
+.env
+__pycache__
