@@ -1,0 +1,48 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  hacollector:
+    build:
+      context: .
+      dockerfile: ./docker-hacollector/Dockerfile
+    container_name: hacollector
+    restart: always
+    logging: *default-logging
+    environment:
+      - LOG_DIR=/var/log/hacollector
+    volumes:
+      - /var/log/hacollector:/var/log/hacollector
+      - ./src/hacollector.conf:/hacollector/hacollector.conf:ro
+      - ./src/.env:/hacollector/.env:ro
+
+  tcp2mqtt:
+    build:
+      context: .
+      dockerfile: ./docker-tcp2mqtt/Dockerfile
+    container_name: tcp2mqtt
+    restart: always
+    logging: *default-logging
+    environment:
+      - LOG_DIR=/var/log/hacollector
+    volumes:
+      - /var/log/hacollector:/var/log/hacollector
+      - ./src/hacollector.conf:/tcp2mqtt/hacollector.conf:ro
+      - ./src/.env:/tcp2mqtt/.env:ro
+
+  tcp2mqtt-aircon:
+    build:
+      context: .
+      dockerfile: ./docker-tcp2mqtt-aircon/Dockerfile
+    container_name: tcp2mqtt_aircon
+    restart: always
+    logging: *default-logging
+    environment:
+      - LOG_DIR=/var/log/hacollector
+    volumes:
+      - /var/log/hacollector:/var/log/hacollector
+      - ./src/hacollector.conf:/tcp2mqtt_aircon/hacollector.conf:ro
+      - ./src/.env:/tcp2mqtt_aircon/.env:ro

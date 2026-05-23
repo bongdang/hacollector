@@ -3,5 +3,11 @@ log/
 log_old/
 .vim/
 .python-version
-.env
+.DS_Store
 __pycache__
+src/log/
+src/__pycache__/
+src/.env
+src/test_.env
+src/.python-version
+.claude/
