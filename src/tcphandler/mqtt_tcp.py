@@ -27,6 +27,7 @@ class MqttTcpHandler:
         self.publish_list: list[dict]               = []
         self.ignore_handling: bool                  = False
         self.last_publishing_topic: str             = ""
+        self.last_publishing_payload: str           = ""
         self.last_publishing_time                   = time.monotonic()
         self.interval                               = 0.1
 
@@ -107,13 +108,16 @@ class MqttTcpHandler:
         logger.debug(f"<<< From MQTT ## topic = [{topic}], payload[{payload}]")
         if type(topic) is not list or len(topic) != 4:
             logger.debug("<<< is not Valid topic fot mqtt2tcp")
+            return
         (header, device, command, room) = topic
         if header != RS485TCP:
             logger.debug(f"<<< header[{header}] is not Valid topic for mqtt2tcp")
+            return
         if device not in [DEVICE_LIGHT, DEVICE_THERMOSTAT,
-                          DEVICE_PLUG, DEVICE_GAS, DEVICE_ELEVATOR, 
+                          DEVICE_PLUG, DEVICE_GAS, DEVICE_ELEVATOR,
                           DEVICE_FAN, DEVICE_AIRCON, DEVICE_SENSOR]:
             logger.debug(f"<<< Unknown Device[{device}]fot mqtt2tcp")
+            return
 
         if command == RS485STAT:
             logger.debug(f"<<< STATUS from [{device}] with [{room}]")
@@ -142,13 +146,16 @@ class MqttTcpHandler:
         logger.debug(f">>> Sending states to MQTT : d=[{device}], v=[{value}]")
         if self.mqtt_client is not None:
             last_access_time = time.monotonic()
-            if topic_str == self.last_publishing_topic:
+            # Drop only an identical repeat (same topic AND same payload) within the
+            # interval. A different value on the same topic must still be published.
+            if topic_str == self.last_publishing_topic and msg_str == self.last_publishing_payload:
                 if last_access_time < self.last_publishing_time + self.interval:
-                    logger.info(f"SAME topic({topic_str}). so, Ignored!")
+                    logger.debug(f"SAME topic+payload({topic_str}). so, Ignored!")
                     return
             _ = self.mqtt_client.publish(topic_str, msg_str)
             # color_log.log(f"pub Result : {ret}", Color.Yellow, ColorLog.Level.DEBUG)
             self.last_publishing_topic = topic_str
+            self.last_publishing_payload = msg_str
             self.last_publishing_time = last_access_time
 
     def on_publish(self, client, obj, mid):
@@ -161,6 +168,12 @@ class MqttTcpHandler:
         if int(rc) == 0:
             logger.info("[MQTT] connected OK")
             self.start_discovery = True
+            # paho restores neither subscriptions nor session after an automatic
+            # reconnect, so re-subscribe on every (re)connect. Without this, a single
+            # broker bounce silently kills command handling until process restart.
+            if self.subscribe_list:
+                client.subscribe(self.subscribe_list)
+                logger.info(f"[MQTT] re-subscribed to {len(self.subscribe_list)} topic(s) on connect")
             return
         elif int(rc) == 1:
             logger.info("[MQTT] 1: Connection refused – incorrect protocol version")

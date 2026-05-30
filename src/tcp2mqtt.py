@@ -31,12 +31,12 @@ async def main(loop: asyncio.AbstractEventLoop, first_run: bool):
     conf_candidates = [root_dir / cfg.CONF_FILE, pathlib.Path('/hacollector') / cfg.CONF_FILE]
     env_candidates = [root_dir / '.env', pathlib.Path('/hacollector/.env')]
 
+    log_dir_env = os.environ.get('LOG_DIR', '')
+    log_root = pathlib.Path(log_dir_env) if log_dir_env else root_dir
+    log_sub = '' if log_dir_env else 'log'
+    log_dir = log_root if not log_sub else log_root / log_sub
     if first_run:
-        log_dir_env = os.environ.get('LOG_DIR', '')
-        log_root = pathlib.Path(log_dir_env) if log_dir_env else root_dir
-        log_sub = '' if log_dir_env else 'log'
-        log_dir = log_root if not log_sub else log_root / log_sub
-        if not setup_logger('tcp2mqtt', log_dir=log_dir, file_name='tcp2mqtt.log', level='info'):
+        if not setup_logger('tcp2mqtt', log_dir=log_dir, file_name='tcp2mqtt.log', level='info', emit_banner=False):
             sys.exit(1)
 
     parser = argparse.ArgumentParser(description="how to use in command line cls_lgac485.py")
@@ -60,6 +60,9 @@ async def main(loop: asyncio.AbstractEventLoop, first_run: bool):
     else:
         load_dotenv()
     app_config.load_env_values()
+    # Re-init after env load so app_config.log_level (stderr) and FILE_LOGLEVEL (file sink)
+    # take effect — mirrors tcp2mqtt_aircon.py / hacollector.py.
+    setup_logger('tcp2mqtt', log_dir=log_dir, file_name='tcp2mqtt.log', level=app_config.log_level)
 
     if not app_config.has_mqtt_config():
         logger.error("MQTT configuration is missing!")

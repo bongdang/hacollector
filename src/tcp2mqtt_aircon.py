@@ -36,7 +36,7 @@ async def main():
     log_root = pathlib.Path(log_dir_env) if log_dir_env else root_dir
     log_sub = '' if log_dir_env else 'log'
     log_dir = log_root if not log_sub else log_root / log_sub
-    if not setup_logger('tcp2mqtt_aircon', log_dir=log_dir, file_name='tcp2mqtt_aircon.log', level='info'):
+    if not setup_logger('tcp2mqtt_aircon', log_dir=log_dir, file_name='tcp2mqtt_aircon.log', level='info', emit_banner=False):
         sys.exit(1)
 
     config = configparser.ConfigParser()

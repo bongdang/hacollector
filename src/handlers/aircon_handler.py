@@ -58,7 +58,7 @@ class GeneralAirconHandler:
                 aircon_cmd.fanmode = data_dict[MQTT_FAN_MODE]
 
             self.mqtt_aircon_handler.packet_handler.notify_to_homeassistant_aircon(device, room, aircon_cmd)
-            logger.info(f"Yes. {device},{command},{room},{opcmd} sent to HA.")
+            logger.debug(f"Yes. {device},{command},{room},{opcmd} sent to HA.")
         except Exception as e:
             logger.info(f"Error [{e}]in handling packets [{opcmd}]")
 
@@ -106,7 +106,7 @@ class GeneralAirconHandler:
             elif cmd_str == MQTT_TARGET_TEMP:
                 aircon.target_temp = int(float(parameter))
 
-            logger.info(f"act={aircon.action}, fanmove={aircon.fanmove}, fanspeed={aircon.fanmode}, "
+            logger.debug(f"act={aircon.action}, fanmove={aircon.fanmove}, fanspeed={aircon.fanmode}, "
                 f"taregt_temp={aircon.target_temp}")
             if aircon.action in [PAYLOAD_OFF]:
                 action_str = PAYLOAD_OFF

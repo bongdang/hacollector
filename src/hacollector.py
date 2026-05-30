@@ -28,7 +28,7 @@ async def main(loop: asyncio.AbstractEventLoop, first_run: bool):
         log_root = pathlib.Path(log_dir_env) if log_dir_env else root_dir
         log_sub = '' if log_dir_env else 'log'
         log_dir = log_root if not log_sub else log_root / log_sub
-        if not setup_logger('hacollector', log_dir=log_dir, file_name=cfg.CONF_LOGFILE, level=cfg.CONF_LOGLEVEL):
+        if not setup_logger('hacollector', log_dir=log_dir, file_name=cfg.CONF_LOGFILE, level=cfg.CONF_LOGLEVEL, emit_banner=False):
             sys.exit(1)
 
     logger.info(f"Starting...{SW_VERSION_STRING}")

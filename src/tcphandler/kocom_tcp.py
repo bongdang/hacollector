@@ -506,22 +506,34 @@ class KocomHandler:
             logger.info(f"[MQTT to RS485]Error [{e}] {device_str}/{room_str} = {payload}")
 
     def async_send_made_packet(self, full_packet: bytes):
-        if len(full_packet) != 0:
-            logger.debug(f"[Packet made] = {full_packet.hex()}")
-            if self._loop is None:
-                logger.warning("Event loop not ready, cannot send packet")
-                return
-            try:
-                future = asyncio.run_coroutine_threadsafe(
-                    self.comm.async_write_one_chunk(full_packet), self._loop
-                )
-                ok: bool = future.result(timeout=5.0)
-            except Exception as e:
-                logger.critical(f"Writing to Kocom Fail: {e}")
-                ok = False
-            if ok:
-                logger.debug(f"Data sent to Kocom : {full_packet.hex()}")
-            else:
-                logger.critical(f"Writing to Kocom Fail: {full_packet.hex()}")
-        else:
+        if len(full_packet) == 0:
             logger.info("Make kocom Data - Fail!!!")
+            return
+
+        logger.debug(f"[Packet made] = {full_packet.hex()}")
+        if self._loop is None:
+            logger.warning("Event loop not ready, cannot send packet")
+            return
+
+        # Called from the paho callback thread. Submit the write to the event loop but do
+        # NOT block on future.result() — that would stall paho's network thread (delaying
+        # keepalive/PINGREQ and other inbound messages) for up to the write's
+        # wait_safe_communication interval. async_write_one_chunk serializes writes via the
+        # comm _write_lock, so writes never collide on the half-duplex bus. Result is logged
+        # asynchronously via the done-callback (runs on the event-loop thread).
+        future = asyncio.run_coroutine_threadsafe(
+            self.comm.async_write_one_chunk(full_packet), self._loop
+        )
+
+        def _log_write_result(fut, pkt=full_packet):
+            try:
+                ok = fut.result()
+            except Exception as e:
+                logger.critical(f"Writing to Kocom Fail: {e} [{pkt.hex()}]")
+                return
+            if ok:
+                logger.debug(f"Data sent to Kocom : {pkt.hex()}")
+            else:
+                logger.critical(f"Writing to Kocom Fail: {pkt.hex()}")
+
+        future.add_done_callback(_log_write_result)

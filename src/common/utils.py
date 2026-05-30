@@ -64,12 +64,18 @@ def setup_logger(
     log_dir: pathlib.Path | None = None,
     file_name: str | None = None,
     level: str = "info",
+    file_level: str = "warning",
+    emit_banner: bool = True,
 ) -> bool:
     """Configure loguru sinks for the application.
 
     - Replaces all existing sinks.
-    - stderr sink uses the requested level with color.
-    - File sink (if log_dir + file_name given) always captures DEBUG and rotates at 1 MB, keeps 10 files.
+    - stderr sink uses the requested `level` with color (real-time / docker logs).
+    - File sink (if log_dir + file_name given) captures `file_level` and above and
+      rotates at 1 MB, keeps 10 files. Defaults to WARNING so the persistent log holds
+      only noteworthy events; override with the FILE_LOGLEVEL env var (e.g. =debug) when
+      diagnosing an issue. Records bound with `lifecycle=True` (e.g. the startup banner)
+      are ALWAYS written to the file regardless of level, so (re)start times are tracked.
     Returns False if the file sink could not be prepared.
     """
     logger.remove()
@@ -79,12 +85,23 @@ def setup_logger(
     if log_dir is None or not file_name:
         return True
 
+    resolved_file_level = _normalize_level(os.environ.get("FILE_LOGLEVEL", file_level))
+    file_level_no = logger.level(resolved_file_level).no
+
+    def file_filter(record) -> bool:
+        # Always persist lifecycle events (service start, etc.) so the file records when
+        # the process (re)started even when the threshold is WARNING+.
+        if record["extra"].get("lifecycle"):
+            return True
+        return record["level"].no >= file_level_no
+
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
         logger.add(
             log_dir / file_name,
             format=_FILE_FORMAT,
-            level="DEBUG",
+            level=0,            # accept everything; file_filter decides what is written
+            filter=file_filter,
             rotation="1 MB",
             retention=10,
             encoding="utf-8",
@@ -95,6 +112,12 @@ def setup_logger(
         return False
 
     logger.bind(app=app_name)
+    # Entrypoints call setup_logger twice (bootstrap, then again after env load). Only the
+    # final call should emit the lifecycle banner, so pass emit_banner=False on the first.
+    if emit_banner:
+        logger.bind(lifecycle=True).info(
+            f"===== {app_name} started — logging ready (stderr={console_level}, file>={resolved_file_level}) ====="
+        )
     return True
 
 

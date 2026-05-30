@@ -27,6 +27,7 @@ TEST_LGAC_PORT = 8899
 MAX_READ_ERROR_RETRY = 3
 MAX_AIRCON_COMM_TIME = 3
 MAX_MARKED_RETRY = 2  # Maximum retry attempts for marked actions
+MAX_CONSECUTIVE_RECOVERY_FAILURES = 2  # raise after this many consecutive scan failures so run_loop.sh / docker restart can reset EW11 session
 MARK_EXPIRY_SECONDS = 300  # 5 minutes
 
 MARK_FILE_PREFIX = 'bd-aircon-'
@@ -278,6 +279,7 @@ class LGACPacketHandler:
             )
         # self.command_queue: Queue       = Queue()
         self.loop: asyncio.AbstractEventLoop
+        self._comm_lock: asyncio.Lock   = asyncio.Lock()  # serialize all I/O on the single shared self.comm
         self.read_error_count           = 0
         self.send_and_get_state         = False
         self.send_start_time: float     = 0.0
@@ -387,6 +389,15 @@ class LGACPacketHandler:
         return None
 
     async def async_send_and_get_result(self, group_no: int, id: int, airconset: Aircon.Info, max_retries: int = 2) -> Aircon.Info | None:
+        # Serialize every socket I/O on the single shared self.comm. The periodic scan
+        # loop (async_scan_aircons_loop) and MQTT-triggered commands run as separate tasks
+        # on the same event loop; without this lock they could interleave
+        # connect/write/read/close on one socket — connect_async_socket would overwrite the
+        # other's reader/writer — and corrupt each other's packets.
+        async with self._comm_lock:
+            return await self._send_and_get_result_locked(group_no, id, airconset, max_retries)
+
+    async def _send_and_get_result_locked(self, group_no: int, id: int, airconset: Aircon.Info, max_retries: int = 2) -> Aircon.Info | None:
         def handle_max_read_error():
             logger.critical(f"LGAC read failed {MAX_READ_ERROR_RETRY} times - connection unstable")
             raise RuntimeError(f"LGAC: Exceeded max read errors ({MAX_READ_ERROR_RETRY} failures)")
@@ -415,7 +426,7 @@ class LGACPacketHandler:
                     await asyncio.sleep(cfg.RS485_WRITE_INTERVAL_SEC)
                     read_packet = await self.async_read_one_chunk()
                     if read_packet:
-                        logger.info(f"Read From LGAC ==> {read_packet.hex()}")
+                        logger.debug(f"Read From LGAC ==> {read_packet.hex()}")
 
                         new_packet = LGACPacket(read_packet)
                         logger.debug(f'{new_packet}')
@@ -464,7 +475,7 @@ class LGACPacketHandler:
 
     async def async_get_current_status(self, aircon_no: int) -> Aircon.Info | None:
         aircon_cmd = Aircon.Info(PAYLOAD_STATUS, '', '', '', AIRCON_DEFAULT_TEMP, AIRCON_DEFAULT_TEMP)
-        logger.info(f"Get Aircon Status : {aircon_no}")
+        logger.debug(f"Get Aircon Status : {aircon_no}")
 
         if self.check_aircon_communicationable_or_reset():
             # is_marked = check_marked_action(MARK_FILE_PREFIX)
@@ -476,7 +487,7 @@ class LGACPacketHandler:
             #     _ = await self.async_send_and_get_result(0, no, cmd)    # type: ignore
             aircon_info: Aircon.Info | None = await self.async_send_and_get_result(0, aircon_no, aircon_cmd)
             if aircon_info:
-                logger.info(f"Returned Get Aircon Status : {aircon_info.action} {aircon_info.opmode}) {aircon_info.cur_temp}")
+                logger.debug(f"Returned Get Aircon Status : {aircon_info.action} {aircon_info.opmode}) {aircon_info.cur_temp}")
                 if aircon_info.opmode == PAYLOAD_AUTO:
                     aircon_info.action = PAYLOAD_ON
                 if aircon_info.fanmode == PAYLOAD_SILENT:
@@ -497,7 +508,7 @@ class LGACPacketHandler:
         aircon_cmd.target_temp = int(float(data_dict.get(MQTT_TARGET_TEMP, AIRCON_DEFAULT_TEMP)))
         aircon_cmd.fanmove = data_dict[MQTT_SWING_MODE]
         aircon_cmd.fanmode = data_dict[MQTT_FAN_MODE]
-        logger.info(f"no[{aircon_no}] ={aircon_cmd.action}, {aircon_cmd.opmode}")
+        logger.debug(f"no[{aircon_no}] ={aircon_cmd.action}, {aircon_cmd.opmode}")
 
         # Check if there's a marked file from a previous incomplete operation
         is_marked = check_marked_action(MARK_FILE_PREFIX)
@@ -583,21 +594,10 @@ class LGACPacketHandler:
                     aircon_info.fanmode = PAYLOAD_LOW
         return aircon_info
 
-    # Sync wrapper for backward compatibility
-    def aircon_tcp_send_handler(self, room: str, payload: str) -> Aircon.Info | None:
-        # Get the current event loop or create a new one
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        return loop.run_until_complete(self.aircon_tcp_send_handler_async(room, payload))
-
     async def async_scan_aircon_status(self, device_obj: Aircon):
         room_no_str = self.get_room_aircon_number(device_obj.room_name)
         no = int(room_no_str)
-        logger.info(f"Aircorn Room name = {device_obj.room_name}, Number = {no}")
+        logger.debug(f"Aircorn Room name = {device_obj.room_name}, Number = {no}")
 
         aircon_info: Aircon.Info | None  = await self.async_get_current_status(no)
         if aircon_info:
@@ -609,29 +609,36 @@ class LGACPacketHandler:
             assert isinstance(aircon, Aircon)
             if (now - aircon.scan.tick) > cfg.WALLPAD_SCAN_INTERVAL_TIME:
                 aircon.scan.tick = now
-                logger.info(f">>>>>Rescan {aircon} Check Sending!!!!")
+                logger.debug(f">>>>>Rescan {aircon} Check Sending!!!!")
                 await self.async_scan_aircon_status(aircon)
                 await asyncio.sleep(cfg.PACKET_RESEND_INTERVAL_SEC)
 
-    async def async_lgac_main_write_loop(self) -> None:
-        while True:
-            await asyncio.sleep(0.01)
-            # if not self.command_queue.empty():
-            #     (aircon_no, room_str, aircon_cmd) = self.command_queue.get()
-            #     assert isinstance(aircon_cmd, Aircon.Info)
-            #     aircon_info = await self.async_set_current_mode(aircon_no, aircon_cmd)
-            #     if aircon_info:
-            #         self.notify_to_homeassistant(DEVICE_AIRCON, room_str, aircon_info)
-
     async def async_scan_aircons_loop(self):
+        consecutive_failures = 0
         while True:
             try:
                 await self.async_scan_aircons(time.monotonic())
+                consecutive_failures = 0
                 await asyncio.sleep(0.01)
             except RuntimeError as e:
-                logger.warning(f"LGAC communication error: {e} - will retry after reconnection delay")
-                # Wait before retrying to avoid rapid reconnection attempts
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_CONSECUTIVE_RECOVERY_FAILURES:
+                    logger.critical(
+                        f"LGAC consecutive recovery failures ({consecutive_failures}) - triggering process restart"
+                    )
+                    raise RuntimeError("LGAC consecutive recovery failures - triggering process restart") from e
+                logger.warning(
+                    f"LGAC communication error ({consecutive_failures}/{MAX_CONSECUTIVE_RECOVERY_FAILURES}): {e} - will retry after reconnection delay"
+                )
                 await asyncio.sleep(5.0)
             except Exception as e:
-                logger.error(f"Unexpected error in LGAC scan loop: {e}")
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_CONSECUTIVE_RECOVERY_FAILURES:
+                    logger.critical(
+                        f"LGAC consecutive recovery failures ({consecutive_failures}) - triggering process restart"
+                    )
+                    raise RuntimeError("LGAC consecutive recovery failures - triggering process restart") from e
+                logger.error(
+                    f"Unexpected error in LGAC scan loop ({consecutive_failures}/{MAX_CONSECUTIVE_RECOVERY_FAILURES}): {e}"
+                )
                 await asyncio.sleep(5.0)

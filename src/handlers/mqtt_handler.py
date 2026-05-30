@@ -384,10 +384,10 @@ class MqttHandler:
         if header == RS485TCP:
             if command == RS485STAT:
                 if device != DEVICE_AIRCON:
-                    logger.info(f"***>> From TCP2MQTT {device},{command},{room},{payload}")
+                    logger.debug(f"***>> From TCP2MQTT {device},{command},{room},{payload}")
                     self.kocom_tcp_handler(device, command, room, payload)
                 elif device == DEVICE_AIRCON:
-                    logger.info(f"***>> From TCP2MQTT_AIRCON_IN_MAIN {device},{command},{room},{payload}")
+                    logger.debug(f"***>> From TCP2MQTT_AIRCON_IN_MAIN {device},{command},{room},{payload}")
                     self.handle_mqtt_from_tcp_aircon(device, command, room, payload)
             elif command == RS485COMMAND:
                 logger.debug("This topic is for Sending to RS485. Not ME.!")
@@ -481,7 +481,7 @@ class MqttHandler:
 
             if topic is not None:
                 self.mqtt_client.publish(topic, v_value)
-                logger.info(f"[To HA]{topic} = {v_value}")
+                logger.debug(f"[To HA]{topic} = {v_value}")
         else:
             logger.critical("MQTT handle is invalid!")
 
@@ -490,7 +490,7 @@ class MqttHandler:
             mode = PAYLOAD_OFF
         else:
             mode = aircon_info.opmode
-        logger.info(f"current action = {aircon_info.action}, opmode = {aircon_info.opmode} => opmode=[{mode}]")
+        logger.debug(f"current action = {aircon_info.action}, opmode = {aircon_info.opmode} => opmode=[{mode}]")
         if aircon_info.fanmove == PAYLOAD_SWING:
             swing = PAYLOAD_ON
         else:
@@ -502,11 +502,11 @@ class MqttHandler:
             f'{MQTT_CURRENT_TEMP}': f'{int(aircon_info.cur_temp)}',
             f'{MQTT_TARGET_TEMP}': f'{aircon_info.target_temp}'
         }
-        logger.info(f"new aircon status = [{value}]")
+        logger.debug(f"new aircon status = [{value}]")
         self.send_state_to_homeassistant(dev_str, room_str, value)
 
     def on_publish(self, client, obj, mid):
-        logger.info(f"Publish: {str(mid)}")
+        logger.debug(f"Publish: {str(mid)}")
 
     def on_subscribe(self, client, obj, mid, granted_qos):
         logger.debug(f"Subscribed: {str(mid)} {str(granted_qos)}")
@@ -514,7 +514,15 @@ class MqttHandler:
     def on_connect(self, client, userdata, flags, rc):
         if int(rc) == 0:
             logger.info("[MQTT] connected OK")
+            # start_discovery triggers HA bridge re-subscribe + discovery republish
+            # via the hub scan loop (hub.py). That path covers only the bridge topic.
             self.start_discovery = True
+            # paho restores no subscriptions after an automatic reconnect, and the
+            # discovery path above does not re-subscribe the RS485 state topics. Without
+            # this, a broker bounce silently stops the hub from receiving tcp2mqtt /
+            # tcp2mqtt_aircon state until process restart. (Duplicate SUBSCRIBE is a no-op.)
+            if self.mqtt_client is not None:
+                self.initialize_tcp_topics()
             return
         elif int(rc) == 1:
             logger.info("[MQTT] 1: Connection refused – incorrect protocol version")

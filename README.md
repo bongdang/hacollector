@@ -28,6 +28,7 @@ hacollector는 Home Assitant에서 RS485 프로토콜을 지원하는 아파트�
 		3. 제습
 		4. 송풍
 		5. 전원
+2. **운영 안정성** — MQTT 브로커 재시작 후 자동 재구독, EW11 게이트웨이 무응답 시 자동 재연결을 지원합니다.
 
 ## 요구사항
 아파트 환경:
@@ -38,6 +39,7 @@ hacollector는 Home Assitant에서 RS485 프로토콜을 지원하는 아파트�
 	OS : 리눅스 혹은 MacOS
 	MQTT: mosquitto mqtt
 	Python: 3.9.7 이상
+	paho-mqtt: 1.x (`<2.0`) — `requirements.txt`에 고정. 2.x는 콜백 API가 달라 그대로 동작하지 않습니다.
 
 장비 : EW11 RS485 Modbus to Ethernet Gateway
 	2EA : Kocom WallPad용 1개, LG System Aircon용 1개
@@ -48,6 +50,7 @@ hacollector는 Home Assitant에서 RS485 프로토콜을 지원하는 아파트�
 3. thread를 사용하지 않고, asyncio를 사용하고 있습니다.
 4. Python-dotenv를 사용하여 .env파일에서 일부분의 정보를 읽어들입니다. (주로 테스트용입니다.)
 5. Dockerfile을 예제로 제공합니다(베이스 이미지: `python:3.13-slim`). 설정 파일(`hacollector.conf`, `.env`)은 이미지에 포함하지 않고 런타임에 마운트하거나 환경변수로 주입하는 방식을 권장합니다. 로그 파일은 loguru 빌트인 rotation으로 컨테이너 안 `/var/log/hacollector/`에 1MB × 10개로 회전 보관되며, docker-compose의 json-file 로그 드라이버에도 `max-size: 10m, max-file: 5` 제한이 걸려 있습니다.
+   - 로그는 두 갈래로 나갑니다. **콘솔/도커 로그(stderr)** 는 `CONF_LOGLEVEL`(기본 `info`)로 실시간 동작을 보여주고, **파일 로그**는 기본적으로 **WARNING 이상**만 남겨 평소엔 거의 비어 있습니다(정상 동작 추적은 `docker logs`로). 파일 레벨은 `FILE_LOGLEVEL`로 조정합니다. 단, 프로세스가 (재)시작될 때마다 `===== <서비스> started =====` 배너가 레벨과 무관하게 파일에 1줄 남아 **재부팅/재시작 시점을 추적**할 수 있습니다.
 6. Himpel 공기순환기에 대한 자료가 없어서 완벽하지는 않지만, Himpel에서 제공하는 CO2 농도 센서를 추가 했습니다.
 7. LG System Aircon의 경우에 패킷을 분석해서 공유해 주신 여러분들 덕분에 모든 기능은 아니지만 여름에 필요한 정도는 구현이 되어있습니다. 
 (정리가 덜 되어서 엉성한 코드지만 작년 한 해 만들어서 잘 사용했고, 필요하신 분들이 계실 것 같아서 공유하는 가장 큰 이유 입니다.)
@@ -80,8 +83,12 @@ LGAIRCON_SERVER_PORT=8899
 # 방 이름 (콜론 구분)
 ROOMS=livingroom:bedroom:room1:room2:room3
 
-# 로그 레벨 (debug | info | warning | error)
+# 로그 레벨
+#   CONF_LOGLEVEL : 콘솔/도커 로그(stderr) 레벨 (debug | info | warning | error)
+#   FILE_LOGLEVEL : 파일 로그(/var/log/hacollector/*.log) 레벨. 기본 warning.
+#                   평소엔 심각한 이벤트만 파일에 남기고, 문제 진단 시 debug로 올립니다.
 CONF_LOGLEVEL=info
+# FILE_LOGLEVEL=warning
 ```
 
 운영 컨테이너(docker)와 아래의 진단 CLI가 **같은 `.env`를 읽습니다**. 한 번 설정해두면 양쪽 모두 동일한 환경을 공유하기 때문에 설정을 두 번 할 필요가 없습니다.

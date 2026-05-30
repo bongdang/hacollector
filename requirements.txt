@@ -1,3 +1,6 @@
-paho-mqtt
+# Pinned <2.0: the codebase uses paho's VERSION1 callback signatures
+# (on_connect(client, userdata, flags, rc), etc.). paho 2.x defaults that API to
+# deprecated and removes it in 3.0, so an unpinned rebuild would break MQTT.
+paho-mqtt<2.0
 python-dotenv
 loguru

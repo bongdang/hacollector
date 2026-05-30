@@ -6,6 +6,8 @@ from loguru import logger
 
 
 class TCPComm:
+    TCP_CONNECT_TIMEOUT = 5.0  # bound asyncio.open_connection so EW11 SYN/RST hangs cannot stall the loop
+
     def __init__(self, server: str, port: int, buffer_size: int = 2048, interval: float = 0.0, read_timeout: float = 10.0) -> None:
         self.server                     = server
         self.port                       = int(port)
@@ -18,16 +20,11 @@ class TCPComm:
         self.reader: asyncio.StreamReader
         self.writer: asyncio.StreamWriter
 
-        self._io_event: asyncio.Event   = asyncio.Event()
-        self._io_event.set()            # initially free
+        self._write_lock: asyncio.Lock  = asyncio.Lock()  # real mutex: serialize concurrent writes
 
     @classmethod
     async def async_init(cls, server: str, port: int, buffer_size: int = 2048, interval: float = 0.0):
         return cls(server, port, buffer_size, interval)
-
-    async def async_make_connection(self):
-        (self.reader, self.writer) = await asyncio.open_connection(host=self.server, port=self.port)
-        self.socket = self.writer.get_extra_info('socket')
 
     async def connect_async_socket(self) -> None:
         # If connection is stale or reset, close old connection first
@@ -38,7 +35,10 @@ class TCPComm:
             except Exception:
                 pass
 
-        self.reader, self.writer = await asyncio.open_connection(self.server, int(self.port))
+        self.reader, self.writer = await asyncio.wait_for(
+            asyncio.open_connection(self.server, int(self.port)),
+            timeout=self.TCP_CONNECT_TIMEOUT,
+        )
         self.connection_reset = False
         self.read_buffer = b''
 
@@ -67,39 +67,28 @@ class TCPComm:
         if remain > 0:
             await asyncio.sleep(remain)
 
-    def enter_processing(self) -> None:
-        self._io_event.clear()
-
-    def leave_processing(self) -> None:
-        self._io_event.set()
-
-    @property
-    def is_processing(self) -> bool:
-        return not self._io_event.is_set()
-
-    async def get_access_ticket(self) -> None:
-        await self._io_event.wait()
-
     async def async_write_one_chunk(self, packet: bytes) -> bool:
         logger.debug(f">>Write to RS485 [{packet.hex()}]. Start")
         ret: bool = True
         try:
-            await self.get_access_ticket()
-            self.enter_processing()
-            await self.wait_safe_communication()
-            self.writer.write(packet)
-            await self.writer.drain()
-            self.last_accessed_time = time.monotonic()
+            # asyncio.Lock is a true mutex (one holder at a time). asyncio.Event was NOT:
+            # Event.set() wakes ALL waiters, so concurrently-submitted writes could all
+            # enter the critical section at once and collide on the half-duplex RS485 bus.
+            async with self._write_lock:
+                await self.wait_safe_communication()
+                self.writer.write(packet)
+                await self.writer.drain()
+                self.last_accessed_time = time.monotonic()
         except Exception as e:
             logger.warning(f"Write to Kocom RS485 fail{e}")
             ret = False
-        finally:
-            self.leave_processing()
 
         logger.debug(f"<<Write to RS485 [{packet.hex()}]. Done")
         return ret
 
-    MAX_CONSECUTIVE_TIMEOUTS = 10  # treat as connection lost after this many consecutive timeouts
+    # treat as connection lost after this many consecutive read timeouts.
+    # Kocom uses read_timeout=60s, so 2 => ~120s (2 min) of total silence before reconnect.
+    MAX_CONSECUTIVE_TIMEOUTS = 2
 
     async def async_get_data_from_buffer(self, length: int) -> bytes:
         '''

@@ -32,6 +32,7 @@ class AirconHandlerTroughMqtt:
         self.publish_list: list[dict]               = []
         self.ignore_handling: bool                  = False
         self.last_publishing_topic: str             = ""
+        self.last_publishing_payload: str           = ""
         self.last_publishing_time                   = time.monotonic()
         self.interval                               = 0.1
         self.packet_handler                         = packet_handler
@@ -113,21 +114,24 @@ class AirconHandlerTroughMqtt:
             self.start_discovery = False
 
     async def handle_message_from_mqtt_async(self, topic: list[str], payload: str) -> None:
-        logger.info(f"<<< From MQTTAIRCON ## topic = [{topic}], payload[{payload}]")
+        logger.debug(f"<<< From MQTTAIRCON ## topic = [{topic}], payload[{payload}]")
         if type(topic) is not list or len(topic) != 4:
             logger.info("<<< is not Valid topic fot mqtt2tcp_aircon")
+            return
         (header, device, command, room) = topic
         if header != RS485TCP:
             logger.info(f"<<< header[{header}] is not Valid topic for mqtt2tcp")
+            return
         if device not in [DEVICE_LIGHT, DEVICE_THERMOSTAT,
                           DEVICE_PLUG, DEVICE_GAS, DEVICE_ELEVATOR,
                           DEVICE_FAN, DEVICE_AIRCON, DEVICE_SENSOR]:
             logger.info(f"<<< Unknown Device[{device}]fot mqtt2tcp")
+            return
 
         if command == RS485STAT:
-            logger.info(f"<<< STATUS from [{device}] with [{room}]")
+            logger.debug(f"<<< STATUS from [{device}] with [{room}]")
         elif command == RS485COMMAND:
-            logger.info(f"<<< COMMAND for Aircon[{device}] with [{room}]")
+            logger.debug(f"<<< COMMAND for Aircon[{device}] with [{room}]")
             if device != DEVICE_AIRCON:
                 logger.info("This module is for aircon!")
             elif device == DEVICE_AIRCON:
@@ -162,24 +166,27 @@ class AirconHandlerTroughMqtt:
     def change_aircon_status(self, dev_str: str, room: str, aircon_info: Aircon.Info):
         value = self._build_aircon_state_payload(aircon_info)
         logger.debug(f"current action = {aircon_info.action}, opmode = {aircon_info.opmode} => opmode=[{value[MQTT_MODE]}]")
-        logger.info(f">>> room [{room}]------------ ")
+        logger.debug(f">>> room [{room}]------------ ")
         topic_str = f'{RS485TCP}/{DEVICE_AIRCON}/{RS485STAT}/{room}'
-        logger.info(f"new aircon status = [{value}]")
+        logger.debug(f"new aircon status = [{value}]")
         msg_str = json.dumps(value)
-        logger.info(f">>> Aircon states to TCP2MQTT_AIRCON t={topic_str}, v=[{msg_str}]")
+        logger.debug(f">>> Aircon states to TCP2MQTT_AIRCON t={topic_str}, v=[{msg_str}]")
         if self.mqtt_client is not None:
             last_access_time = time.monotonic()
-            if topic_str == self.last_publishing_topic:
+            # Drop only an identical repeat (same topic AND same payload) within the
+            # interval. A different value on the same topic must still be published.
+            if topic_str == self.last_publishing_topic and msg_str == self.last_publishing_payload:
                 if last_access_time < self.last_publishing_time + self.interval:
-                    logger.info(f"SAME topic({topic_str}). so, Ignored!")
+                    logger.debug(f"SAME topic+payload({topic_str}). so, Ignored!")
                     return
             _ = self.mqtt_client.publish(topic_str, msg_str)
             # color_log.log(f"pub Result : {ret}", Color.Yellow, ColorLog.Level.INFO)
             self.last_publishing_topic = topic_str
+            self.last_publishing_payload = msg_str
             self.last_publishing_time = last_access_time
 
     def on_publish(self, client, obj, mid):
-        logger.info(f"Publish: {str(mid)}")
+        logger.debug(f"Publish: {str(mid)}")
 
     def on_subscribe(self, client, obj, mid, granted_qos):
         logger.info(f"[MQTT] Successfully subscribed: {str(mid)} QoS={str(granted_qos)}")
@@ -188,6 +195,12 @@ class AirconHandlerTroughMqtt:
         if int(rc) == 0:
             logger.info("[MQTT] connected OK")
             self.start_discovery = True
+            # paho restores neither subscriptions nor session after an automatic
+            # reconnect, so re-subscribe on every (re)connect. Without this, a single
+            # broker bounce silently kills aircon command handling until process restart.
+            if self.subscribe_list:
+                client.subscribe(self.subscribe_list)
+                logger.info(f"[MQTT] re-subscribed to {len(self.subscribe_list)} topic(s) on connect")
             return
         elif int(rc) == 1:
             logger.info("[MQTT] 1: Connection refused – incorrect protocol version")
@@ -208,7 +221,7 @@ class AirconHandlerTroughMqtt:
             rcv_topic = msg.topic.split('/')
             rcv_payload = msg.payload.decode()
 
-            logger.info(f"[MQTT RECEIVED] Message: {msg.topic} = {rcv_payload}")
+            logger.debug(f"[MQTT RECEIVED] Message: {msg.topic} = {rcv_payload}")
             self.handle_message_from_mqtt(rcv_topic, rcv_payload)
 
     def send_mqtt2tcp_aircon_command(self, room, aircon_info):
@@ -216,8 +229,8 @@ class AirconHandlerTroughMqtt:
         if self.mqtt_client:
             topic = f'{RS485TCP}/aircon/{RS485COMMAND}/{room}'
             value = self._build_aircon_state_payload(aircon_info, fallback_on=True)
-            logger.info(f"current action = {aircon_info.action}, opmode = {aircon_info.opmode} => opmode=[{value[MQTT_MODE]}]")
-            logger.info(f"new aircon status = [{value}]")
+            logger.debug(f"current action = {aircon_info.action}, opmode = {aircon_info.opmode} => opmode=[{value[MQTT_MODE]}]")
+            logger.debug(f"new aircon status = [{value}]")
             payload = json.dumps(value)
             self.mqtt_client.publish(topic, payload)
             self.change_aircon_status(DEVICE_AIRCON, room, aircon_info)
@@ -226,8 +239,8 @@ class AirconHandlerTroughMqtt:
 
     def send_mqtt2tcp_aircon_status(self, dev_str: str, room_str: str, aircon_info: Aircon.Info):
         value = self._build_aircon_state_payload(aircon_info)
-        logger.info(f"current action = {aircon_info.action}, opmode = {aircon_info.opmode} => opmode=[{value[MQTT_MODE]}]")
-        logger.info(f"new aircon status = [{value}]")
+        logger.debug(f"current action = {aircon_info.action}, opmode = {aircon_info.opmode} => opmode=[{value[MQTT_MODE]}]")
+        logger.debug(f"new aircon status = [{value}]")
 
         if self.mqtt_client:
             v_value = json.dumps(value)
@@ -239,6 +252,6 @@ class AirconHandlerTroughMqtt:
 
             if topic is not None:
                 self.mqtt_client.publish(topic, v_value)
-                logger.info(f"[To HA]{topic} = {v_value}")
+                logger.debug(f"[To HA]{topic} = {v_value}")
         else:
             logger.critical("MQTT handle is invalid!")
