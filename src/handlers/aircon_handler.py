@@ -53,6 +53,14 @@ class GeneralAirconHandler:
                 aircon_cmd.action = PAYLOAD_ON if data_dict[MQTT_MODE] != PAYLOAD_OFF else PAYLOAD_OFF
                 aircon_cmd.opmode = data_dict[MQTT_MODE]
                 aircon_cmd.cur_temp = int(data_dict[MQTT_CURRENT_TEMP])
+                # Cache the last known real current_temp on the device object so a later
+                # command echo can reuse it instead of emitting 0. Skip 0, which is the
+                # "unknown" sentinel (a command echo) and would re-introduce the flicker.
+                if aircon_cmd.cur_temp > 0:
+                    try:
+                        self.get_aircon(room).current_temp = aircon_cmd.cur_temp
+                    except ValueError:
+                        pass
                 aircon_cmd.target_temp = int(data_dict[MQTT_TARGET_TEMP])
                 aircon_cmd.fanmove = data_dict[MQTT_SWING_MODE]
                 aircon_cmd.fanmode = data_dict[MQTT_FAN_MODE]
@@ -113,7 +121,9 @@ class GeneralAirconHandler:
             else:
                 action_str = PAYLOAD_ON
             # aircon_no = int(self.get_room_aircon_number(room_str))
-            aircon_cmd = Aircon.Info(action_str, opmode, aircon.fanmove, aircon.fanmode, 0, aircon.target_temp)
+            # Use the last known current_temp (cached in notify_to_ha_from_aircon_made_mqtt)
+            # for the optimistic echo, so HA does not flash 0 while waiting for the real read.
+            aircon_cmd = Aircon.Info(action_str, opmode, aircon.fanmove, aircon.fanmode, aircon.current_temp, aircon.target_temp)
 
             self.mqtt_aircon_handler.send_mqtt2tcp_aircon_command(room_str, aircon_cmd)
             self.notify_to_ha_from_aircon_made_mqtt(device_str, cmd_str, room_str, parameter, aircon.target_temp)
